@@ -449,7 +449,7 @@ func extractNinjaData(ctx *android.Context) (builds []map[string]interface{}, ru
 		})
 
 		buildList = append(buildList, map[string]interface{}{
-			"build_id":      "soong_build_1",
+			"build_id":      "soong_build",
 			"rule":          "soong_rule",
 			"variables":     map[string]string{},
 			"pool":          "",
@@ -463,7 +463,7 @@ func extractNinjaData(ctx *android.Context) (builds []map[string]interface{}, ru
 			"path":   "soong_output",
 			"status": "pending",
 			"hash":   "",
-			"build":  "soong_build_1",
+			"build":  "soong_build",
 		})
 	}
 
