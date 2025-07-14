@@ -15,10 +15,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,6 +49,10 @@ var (
 	delvePath   string
 
 	cmdlineArgs android.CmdArgs
+
+	// Distninja related flags
+	useDistninja       bool
+	distninjaServerURL string
 )
 
 const configCacheFile = "config.cache"
@@ -88,6 +95,10 @@ func init() {
 	// the time to remove them yet
 	flag.BoolVar(&cmdlineArgs.RunGoTests, "t", false, "build and run go tests during bootstrap")
 	flag.BoolVar(&cmdlineArgs.IncrementalBuildActions, "incremental-build-actions", false, "generate build actions incrementally")
+
+	// Distninja integration flags
+	flag.BoolVar(&useDistninja, "use-distninja", false, "use distninja server instead of generating build.ninja")
+	flag.StringVar(&distninjaServerURL, "distninja-server", "http://localhost:9090", "distninja server URL")
 
 	// Disable deterministic randomization in the protobuf package, so incremental
 	// builds with unrelated Soong changes don't trigger large rebuilds (since we
@@ -275,7 +286,11 @@ func runSoongOnlyBuild(ctx *android.Context) (string, []string) {
 	case android.GenerateDocFile:
 		stopBefore = bootstrap.StopBeforePrepareBuildActions
 	default:
-		stopBefore = bootstrap.DoEverything
+		if useDistninja {
+			stopBefore = bootstrap.StopBeforeWriteNinja // Stop before writing ninja file
+		} else {
+			stopBefore = bootstrap.DoEverything
+		}
 	}
 
 	ninjaDeps, err := bootstrap.RunBlueprint(cmdlineArgs.Args, stopBefore, ctx.Context, ctx.Config())
@@ -294,8 +309,12 @@ func runSoongOnlyBuild(ctx *android.Context) (string, []string) {
 		maybeQuit(err, "error building Soong documentation")
 		return cmdlineArgs.DocFile, ninjaDeps
 	default:
-		// The actual output (build.ninja) was written in the RunBlueprint() call
-		// above
+		if useDistninja {
+			builds, rules, targets := extractNinjaData(ctx)
+			err := postToDistninja(distninjaServerURL, builds, rules, targets)
+			maybeQuit(err, "failed to post to distninja")
+			return "distninja", ninjaDeps
+		}
 		if needToWriteNinjaHint(ctx) {
 			writeNinjaHint(ctx)
 		}
@@ -324,6 +343,47 @@ func parseAvailableEnv() map[string]string {
 	result, err := shared.EnvFromFile(shared.JoinPath(topDir, availableEnvFile))
 	maybeQuit(err, "error reading available environment file '%s'", availableEnvFile)
 	return result
+}
+
+// postToDistninja posts build, rule, and target data to the distninja server
+func postToDistninja(serverURL string, builds []map[string]interface{}, rules []map[string]interface{}, targets []map[string]interface{}) error {
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	for _, rule := range rules {
+		data, _ := json.Marshal(rule)
+		resp, err := client.Post(serverURL+"/api/v1/rules", "application/json", bytes.NewReader(data))
+		if err != nil {
+			return err
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	for _, build := range builds {
+		data, _ := json.Marshal(build)
+		resp, err := client.Post(serverURL+"/api/v1/builds", "application/json", bytes.NewReader(data))
+		if err != nil {
+			return err
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	for _, target := range targets {
+		data, _ := json.Marshal(target)
+		resp, err := client.Post(serverURL+"/api/v1/targets", "application/json", bytes.NewReader(data))
+		if err != nil {
+			return err
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	return nil
+}
+
+// extractNinjaData extracts build, rule, and target data from the context
+func extractNinjaData(ctx *android.Context) (builds []map[string]interface{}, rules []map[string]interface{}, targets []map[string]interface{}) {
+	// TODO: Implement extraction from ctx.Context or ctx.Config
+	// This is a placeholder. You need to walk the context and collect the ninja rules, builds, and targets.
+	return nil, nil, nil
 }
 
 func main() {
